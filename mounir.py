@@ -16,27 +16,40 @@ client = gspread.authorize(creds)
 # Open the Google Sheet
 sheet = client.open(spreadsheet_name).worksheet(worksheet_name)
 
-def fetch_products(products_url):
-    response = requests.get(products_url)
-    if response.status_code == 200:
-        data = response.json()
-        return data.get('products', [])
-    else:
-        print(f"Failed to retrieve products data: {response.status_code}")
-        return []
+def fetch_products(base_url):
+    all_products = []
+    page = 1
+    while True:
+        products_url = f"{base_url}/products.json?page={page}&limit=2000"
+        response = requests.get(products_url)
+        if response.status_code == 200:
+            data = response.json()
+            products = data.get('products', [])
+            if not products:
+                break
+            for product in products:
+                product["base_url"] = base_url
+            all_products.extend(products)
+            page += 1
+        else:
+            print(f"Failed to retrieve products data: {response.status_code}")
+            break
+    print(f"Got {len(all_products)} products from {base_url}")
+    return all_products
 
 def format_dates(published_at, updated_at):
     published_at_formatted = datetime.strptime(published_at, "%Y-%m-%dT%H:%M:%S%z").strftime("%y-%m-%d")
     updated_at_formatted = datetime.strptime(updated_at, "%Y-%m-%dT%H:%M:%S%z").strftime("%y-%m-%d | %H:%M")
     return published_at_formatted, updated_at_formatted
 
-def write_to_sheet(products, url):
+def write_to_sheet(products):
     existing_products = read_sheet()
     headers = ["Handle", "Published At", "Updated At", "Times Updated At Changed"]
     rows = [headers]
     for product in products:
         handle, published_at, updated_at = product["handle"], product["published_at"], product["updated_at"]
-        handle = f"{url}/products/{handle}"
+        base_url = product["base_url"]
+        handle = f"{base_url}/products/{handle}"
         published_at, updated_at = format_dates(published_at, updated_at)
         if handle not in existing_products:
             product["updated_at_changes"] = 0
@@ -55,38 +68,17 @@ def read_sheet():
     records = sheet.get_all_records()
     return {record["Handle"]: record for record in records}
 
-def monitor_products(url):
-    products_url = url + "/products.json?page=1&limit=2000"
-    
-    # Initial fetch and write to Google Sheets
-    products = fetch_products(products_url)
-    write_to_sheet(products, url)
-
-    # Monitor changes
+def monitor_products(urls):
+    print("Monitoring the products...")
     while True:
-        time.sleep(monitoring_interval)  # Wait for 2 minutes
-        products = fetch_products(products_url)
-        existing_products = read_sheet()
+        all_products = []
+        for url in urls:
+            products = fetch_products(url)
+            all_products.extend(products)
         
-        updated_products = []
-        for product in products:
-            handle, published_at, updated_at = product["handle"], product["published_at"], product["updated_at"]
-            handle = f"{url}/products/{handle}"
-            published_at, updated_at = format_dates(published_at, updated_at)
-            if handle in existing_products:
-                existing_product = existing_products[handle]
-                if (existing_product["Published At"] != published_at or
-                    existing_product["Updated At"] != updated_at):
-                    product["updated_at_changes"] = int(existing_product["Times Updated At Changed"]) + 1
-                else:
-                    product["updated_at_changes"] = int(existing_product["Times Updated At Changed"])
-            else:
-                product["updated_at_changes"] = 0
-            updated_products.append(product)
-
-        write_to_sheet(updated_products, url)
-
+        write_to_sheet(all_products)
+        time.sleep(monitoring_interval)  # Wait for 2 minutes
 
 if __name__ == "__main__":
-    url = "https://sqinwear.com"
-    monitor_products(url)
+    urls = ['https://sqinwear.com', 'https://toptechmaster.com', 'https://oxybio.co', 'https://raidley.top/']
+    monitor_products(urls)
